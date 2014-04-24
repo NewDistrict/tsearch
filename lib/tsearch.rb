@@ -60,11 +60,11 @@ module TSearch
   end
 
   def self.sum_rank(column, text, options = {})
-    "SUM(ts_rank_cd(#{to_tsvector(column, options)}, #{to_querytext(text, options)}, 8)) DESC"
+    "SUM(ts_rank_cd(#{to_tsvector(column, options)}, #{to_tsquery(text, options)}, 8)) DESC"
   end
 
   def self.rank(column, text, options = {})
-    "ts_rank_cd(#{to_tsvector(column, options)}, #{to_querytext(text, options)}, 8) DESC"
+    "ts_rank_cd(#{to_tsvector(column, options)}, #{to_tsquery(text, options)}, 8) DESC"
   end
 
   def self.ts_headline(column, text, as = 'headline', options = {})
@@ -86,7 +86,7 @@ module TSearch
   end
 
   def self.ts_vector_rank(column, text, options = {})
-    "ts_rank_cd(#{column}, #{to_querytext(text, options)}, 4)"
+    "ts_rank_cd(#{column}, #{to_tsquery(text, options)}, 4)"
   end
 
 
