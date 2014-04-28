@@ -8,20 +8,20 @@ module TSearch
   DEFAULT_OPERATOR = :and
 
   module Scope
-    def tsearch_scope(scope_name, fields:, **options)
-      joins, attributes = Array(fields).flatten.partition {|field| field.is_a?(Hash)}
+    def tsearch_scope(scope_name, fields:, weights:{}, **options)
+      joined_attributes, attributes = Array(fields).flatten.partition {|field| field.is_a?(Hash)}
 
       scope scope_name, lambda {|text|
         if text.present?
           scope = all
-          condition = []
+          vector = {}
 
           # Join on the tables we specified
-          joins.each do |hash|
+          joined_attributes.each do |hash|
             hash.each do |association, columns|
               scope = scope.outer_joins(association)
               Array.wrap(columns).each do |column|
-                condition << "#{reflect_on_association(association).quoted_table_name}.#{connection.quote_column_name column}"
+                vector[[association, column]] = "#{reflect_on_association(association).quoted_table_name}.#{connection.quote_column_name column}"
               end
             end
           end
@@ -30,23 +30,38 @@ module TSearch
           # Allows us to pass references to attributes in other tables, e.g. if a has many through association
           # is already loaded, and we want to reference columns in the join table, but don't want to double join the table accidentally
           # we could instead pass 'join_table.desired_column' as an attribute instead of :join_table => :column
-          attributes.each do |attribute|
-            condition << (attribute.to_s.include?('.') ? attribute : "#{quoted_table_name}.#{connection.quote_column_name attribute}")
+          attributes.each do |column|
+            vector[[self, column]] = column.to_s.include?('.') ? column : "#{quoted_table_name}.#{connection.quote_column_name column}"
           end
 
-          condition = condition.join(" || ' ' || ")
+          # Apply weighting to each field
+          vector.each do |(association, column), value|
+            if association == self
+              weight = weights.fetch(column, 'A')
+            else
+              weight = weights.fetch(association, {}).fetch(column, 'A')
+            end
+
+            unless weight =~ /[A-D]/i
+              raise "Invalid TSearch weight: #{weight} for #{name}. Weights must be 'A', 'B', 'C', or 'D' (see Postgres: Text Search Ranking documentation)"
+            end
+
+            vector[[association, column]] = TSearch.setweight(TSearch.to_tsvector(value, options), weight)
+          end
+
+          vector = vector.values.join(" || ")
 
           # Add the where clause
-          scope = scope.where(TSearch.search_condition(condition, text, options))
+          scope = scope.where(TSearch.vector_search_condition vector, text, options)
 
           # Add a group clause if there are joins since they could cause duplicate rows
-          scope = scope.group("#{quoted_table_name}.#{connection.quote_column_name primary_key}") if joins.present?
+          scope = scope.group("#{quoted_table_name}.#{connection.quote_column_name primary_key}") if joined_attributes.present?
 
           # Order by relevance
-          if joins.present?
-            scope = scope.order(TSearch.sum_rank(condition, text, options)).order(:id)
+          if joined_attributes.present?
+            scope = scope.order(TSearch.vector_sum_rank(vector, text, options)).order(:id)
           else
-            scope = scope.order(TSearch.rank(condition, text, options)).order(:id)
+            scope = scope.order(TSearch.vector_rank(vector, text, options)).order(:id)
           end
         end
       }
@@ -60,11 +75,11 @@ module TSearch
   end
 
   def self.sum_rank(column, text, options = {})
-    "SUM(ts_rank_cd(#{to_tsvector(column, options)}, #{to_tsquery(text, options)}, 8)) DESC"
+    vector_sum_rank to_tsvector(column), text, options
   end
 
   def self.rank(column, text, options = {})
-    "ts_rank_cd(#{to_tsvector(column, options)}, #{to_tsquery(text, options)}, 8) DESC"
+    vector_rank to_tsvector(column), text, options
   end
 
   def self.ts_headline(column, text, as = 'headline', options = {})
@@ -76,16 +91,24 @@ module TSearch
   end
 
   def self.to_tsvector(column, dictionary: 'english', **options)
-    "to_tsvector('#{dictionary}', #{column})"
+    "to_tsvector('#{dictionary}', coalesce(#{column},''))"
+  end
+
+  def self.setweight(column, weight)
+    "setweight(#{column}, '#{weight}')"
   end
 
   # TS VECTOR COLUMNS
   # Generate an SQL condition that can be used in a scope (for use with pregenerated ts_vector columns
-  def self.ts_vector_search_condition(column, text, options = {})
+  def self.vector_search_condition(column, text, options = {})
     "#{column} @@ #{to_tsquery(text, options)}"
   end
 
-  def self.ts_vector_rank(column, text, options = {})
+  def self.vector_sum_rank(column, text, options = {})
+    "SUM(ts_rank_cd(#{column}, #{to_tsquery(text, options)}, 8)) DESC"
+  end
+
+  def self.vector_rank(column, text, options = {})
     "ts_rank_cd(#{column}, #{to_tsquery(text, options)}, 4)"
   end
 
