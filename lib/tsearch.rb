@@ -91,7 +91,7 @@ module TSearch
   end
 
   def self.to_tsvector(column, dictionary: 'english', **options)
-    "to_tsvector('#{dictionary}', coalesce(#{column},''))"
+    "to_tsvector('#{dictionary}', coalesce(#{column}::text,''))"
   end
 
   def self.setweight(column, weight)
